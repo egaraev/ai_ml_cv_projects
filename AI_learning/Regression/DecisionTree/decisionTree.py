@@ -45,4 +45,4 @@ tree.fit(X_train,Y_train)
 
 #Make prediction
 prediction = tree.predict([[4,3,2,2,2,3]])
-print (prediction)
+print(prediction)
