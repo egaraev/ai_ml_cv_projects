@@ -1,17 +1,15 @@
-1. **Off-by-one error in CLI index handling**: The `main()` function in `main.py` converts the CLI index to 0-based by subtracting 1 (`index = int(sys.argv[2]) - 1`), but then prints the task number as 1-based (`print(f"Marked task {index+1} as done")`). While this is likely intentional for user-facing output, the inconsistency can lead to confusion and potential bugs in other parts of the system.
+1. The function `count_words` does not handle hyphens properly according to the docstring example. The example shows "well-known" being treated as a single word, but the current implementation will split on hyphens, resulting in `{'well': 1, 'known': 1}` instead of `{'well-known': 1}`.
 
-2. **Missing validation for negative indices in `mark_done` and `delete_task`**: In `todo.py`, the `mark_done` and `delete_task` methods do not explicitly check for negative indices before accessing `tasks[index]`. While Python's negative indexing allows accessing elements from the end, the current logic might be misleading since the user interface only allows positive indices (as per CLI command processing).
+2. The test case `test_mixed_punctuation` has an incorrect expected result. It expects `{'it': 3, 's': 1, 'a': 1, 'beautiful': 1, 'day': 1, 'isn': 1, 't': 1, 'it': 1, 'great': 1, 'yes': 1, 'it': 1, 'is': 1}` but the actual output with the current implementation would be different because apostrophes are replaced with spaces, splitting contractions like "It's" into "it" and "s".
 
-3. **Incomplete error handling in `TodoStorage.load`**: In `storage.py`, if a JSON file exists but is corrupted or unreadable, `load()` returns an empty list instead of surfacing the underlying `json.JSONDecodeError` or `IOError`. This may mask potential data corruption issues that developers need to know about.
+3. The logic for replacing non-alphabetic characters with spaces can be simplified using `str.translate` or regex for better performance and readability.
 
-4. **Inconsistent logging of task status in `main.py`**: When listing tasks, the application displays a visual status symbol (✓ or ○), but there is no consistent output when the task was added, especially since `add_task()` doesn't print confirmation directly in `main.py`. This could lead to confusion for users during command execution.
+4. There's inconsistency in how words with punctuation are handled. For example, "isn't" results in "isn" and "t" when split, but it's unclear if this is intended behavior per the requirements.
 
-5. **Potential performance issue with `TodoStorage.load` for large files**: If a JSON file becomes very large, reading it all at once into memory could become problematic, although not critical given the use-case.
+5. The function is missing type hints for the return value in the docstring, despite having them in the function signature.
 
-6. **No handling of race conditions in storage operations**: The `TodoStorage.save()` method in `storage.py` does not implement any locking mechanisms, which could result in data loss or overwrites in concurrent environments.
+6. The docstring's example doesn't accurately represent the actual behavior since hyphenated words will be split.
 
-7. **Inconsistent exception reporting in CLI interface**: In `main.py`, only `ValueError` is caught for invalid index input. Other exceptions like `IndexError` from `mark_done` or `delete_task` are not handled in the CLI layer, which can cause uncaught exceptions and break the application flow.
-
-8. **Lack of type hints for return values in CLI entry point**: In `main.py`, while `TodoApp` methods are typed, the main function itself lacks return type annotations, although not strictly required for CLI entry points, it can improve readability.
+7. No handling of Unicode characters or non-English alphabets is specified or tested.
 
 APPROVED
