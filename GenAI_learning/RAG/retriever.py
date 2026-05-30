@@ -20,6 +20,7 @@ def get_retriever(collection_name: str):
     )
 
 
+
 def retrieve(question: str, collection_name: str) -> list[str]:
     """Returns a list of relevant text chunks for a given question."""
     retriever = get_retriever(collection_name)

@@ -11,6 +11,7 @@ from generator import answer
 import config
 
 
+
 BANNER = """
 ╔══════════════════════════════════════════╗
 ║           RAG  Query  CLI                ║

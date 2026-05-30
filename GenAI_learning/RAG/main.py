@@ -13,6 +13,7 @@ texts = [
     {"text": "The Siachen Glacier in the Himalayas is one of the biggest glaciers outside the Arctic zones.", "metadata": {"source": "mapsofindia.com"}},
 ]
 
+
 # ── Ingest ─────────────────────────────────────────────────
 ingest(text_array=texts, collection_name=config.COLLECTION_NAME)
 

@@ -28,6 +28,7 @@ def chunk_text(text: str) -> list[str]:
     return splitter.split_text(text)
 
 
+
 def chunk_hash(text: str) -> str:
     """MD5 hash of a chunk — used to detect duplicates."""
     return hashlib.md5(text.encode("utf-8")).hexdigest()

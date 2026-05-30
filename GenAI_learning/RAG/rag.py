@@ -67,6 +67,7 @@ class RAG:
 2. If you don't know the answer, say "Cannot answer the question!" — don't make up an answer.
 3. Keep the answer crisp and limited to 3-4 sentences.
 
+                                              
 Context: {context}
 
 Question: {question}
