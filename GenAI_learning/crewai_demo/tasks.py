@@ -7,7 +7,10 @@ _FILE_BLOCK_FORMAT = (
     "--- filename.py ---\n"
     "<file contents>\n"
     "--- other_filename.py ---\n"
+    "<file contents>\n"
+    "--- datafile.csv ---\n"
     "<file contents>\n\n"
+    "This applies to ALL file types — Python files, CSV files, JSON files, etc. "
     "Use the exact filenames the task specifies. "
     "Do not merge multiple files into one block. "
     "Do not add any text outside the labelled blocks."
@@ -29,6 +32,21 @@ def build_coder_task(feature_request: str) -> Task:
             "- Always think: what happens at the boundaries?\n"
             "- Use type hints on all function signatures\n"
             "- Use docstrings inside the code to explain your logic\n\n"
+            "Architecture rules:\n"
+            "- Each file named in the spec has a designated responsibility. "
+            "Keep those responsibilities strictly separated — never migrate logic from one file to another.\n"
+            "- If a file is designated for storage or I/O (e.g. storage.py), ALL file reading "
+            "and writing must live exclusively in that file. "
+            "Business logic files must not open, read, or write files directly.\n"
+            "- The pipeline has three output folders that are filled automatically by routing "
+            "each file block to the right place based on its name and extension:\n"
+            "    src/   <- all .py implementation files (e.g. library.py, storage.py)\n"
+            "    tests/ <- test files whose name starts with test_ (e.g. test_library.py)\n"
+            "    data/  <- data files: .csv, .json, .yaml, .toml, .xml, .tsv\n"
+            "  Output data files as bare-filename labelled blocks (e.g. '--- books.csv ---', "
+            "NOT '--- data/books.csv ---') and they will land in data/ automatically. "
+            "Never write code that creates data files at runtime instead of outputting them "
+            "as file blocks — runtime creation puts them in the wrong place during tests.\n\n"
             "OUTPUT RULE: Respond with ONLY the labelled file blocks. "
             "No introduction, no explanation, no summary — just the file blocks."
         ),
@@ -36,6 +54,38 @@ def build_coder_task(feature_request: str) -> Task:
             "All required Python files, each in a '--- filename.py ---' labelled block, "
             "with type hints, docstrings, and no placeholder TODOs. "
             "No text outside the labelled blocks."
+        ),
+        agent=coder,
+    )
+
+
+def build_edit_task(edit_instruction: str, existing_files: dict) -> Task:
+    """Phase 1 for edit mode: apply a targeted change to existing files."""
+    files_text = "\n\n".join(
+        "--- " + fname + " ---\n```python\n" + code + "\n```"
+        for fname, code in existing_files.items()
+    )
+    return Task(
+        description=(
+            "/no_think\n"
+            "You are editing existing Python files. Apply the requested change precisely.\n\n"
+            "Current files:\n\n" + files_text + "\n\n"
+            "Edit instruction: " + edit_instruction + "\n\n"
+            "Rules:\n"
+            "- Output ALL files (both modified and unmodified) in labelled blocks\n"
+            "- Make only the changes needed to implement the instruction\n"
+            "- Preserve all existing functionality not mentioned in the instruction\n"
+            "- Use type hints, docstrings, and follow PEP8\n"
+            "- Respect existing file responsibilities — do not move logic between files\n"
+            "- If a storage/IO file exists, all file reading and writing must stay there\n"
+            "- Data files (CSV, JSON, etc.) must be output as bare-filename labelled blocks "
+            "(e.g. '--- books.csv ---'), never as runtime file-creation code\n\n"
+            + _FILE_BLOCK_FORMAT + "\n\n"
+            "OUTPUT RULE: Respond with ONLY the labelled file blocks. No explanation."
+        ),
+        expected_output=(
+            "All project files in '--- filename.py ---' labelled blocks, "
+            "with the requested edit applied and all other files unchanged."
         ),
         agent=coder,
     )
@@ -111,10 +161,15 @@ def build_remaining_tasks(
             "Do not invent methods or validation that are not present.\n\n"
             + outputs_section
             + "Requirements:\n"
-            "- Import from the correct module(s) based on the project file structure. "
-            "Use the actual filenames (without .py) as module names. "
-            "For example: 'from todo import TodoList' or 'from storage import load_todos'. "
-            "Never import from a module that does not exist in the coder's output.\n"
+            "- The project has a fixed directory layout:\n"
+            "    src/   <- all implementation .py files live here\n"
+            "    tests/ <- all test files live here (you are writing into tests/)\n"
+            "    data/  <- data files (.csv, .json, etc.) live here\n"
+            "  The test runner is configured with 'pythonpath = src', so src/ is already "
+            "on sys.path. Import modules by their bare name exactly as they appear in src/.\n"
+            "  For example: 'from library import LibraryManager' or 'from storage import load'. "
+            "Never add sys.path manipulation, never import from a module that does not exist "
+            "in the coder's output.\n"
             "- Add 'import pytest' at the top\n"
             "- Use pytest fixtures where appropriate\n"
             "- Use descriptive test function names\n"
@@ -140,39 +195,24 @@ def build_remaining_tasks(
             "Your job:\n"
             "1. Fix every issue raised in the review\n"
             "2. Make sure the code would pass all the tests\n"
-            "3. Do not remove any existing functionality\n"
-            "4. If the code removes characters, replace with spaces, never delete\n\n"
+            "3. Check that every import in the test file matches exactly what is defined "
+            "in the implementation files — fix any name mismatches or missing imports\n"
+            "4. Do not remove any existing functionality\n"
+            "5. If the code removes characters, replace with spaces, never delete\n\n"
+            "IMPORTANT: Only output files you actually modified. "
+            "If a file is already correct, omit it — it is already saved to disk. "
+            "Do not re-output unchanged files.\n\n"
             + _FILE_BLOCK_FORMAT
         ),
         expected_output=(
-            "All corrected project files in labelled '--- filename.py ---' blocks."
+            "Only the modified project files in labelled '--- filename.py ---' blocks. "
+            "Unchanged files are omitted."
         ),
         agent=fixer,
         context=[code_task, review_task, test_task],
     )
 
-    integrate_task = Task(
-        description=(
-            "/no_think\n"
-            "You have the final implementation files and the test suite.\n\n"
-            "Your job:\n"
-            "1. Check that every import in the test file matches exactly what is defined "
-            "in the implementation files\n"
-            "2. Check that every function/class called in the tests exists in the "
-            "implementation with the exact same name\n"
-            "3. Fix any mismatches - wrong import names, missing imports, typos\n"
-            "4. Do not change any test logic\n\n"
-            + _FILE_BLOCK_FORMAT
-        ),
-        expected_output=(
-            "ALL project files in labelled '--- filename.py ---' blocks, "
-            "complete and ready to run with pytest."
-        ),
-        agent=integrator,
-        context=[fix_task, test_task],
-    )
-
-    return [review_task, test_task, fix_task, integrate_task]
+    return [review_task, test_task, fix_task]
 
 
 def build_repair_tasks(

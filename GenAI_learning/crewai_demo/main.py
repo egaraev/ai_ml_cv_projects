@@ -4,8 +4,7 @@
 
 DEFAULT_TASK = (
     "Create a CLI todo app with add, list, done, delete commands. "
-    "Split into main.py, todo.py, and storage.py. "
-    "Write pytest tests in test_todo.py."
+    "Split into main.py, todo.py, and storage.py."
 )
 
 """
@@ -30,6 +29,7 @@ Usage:
   python main.py
   python main.py "Write a function that counts word frequency in a string"
 """
+import argparse
 import ast
 import json
 import os
@@ -40,7 +40,7 @@ import time
 import subprocess
 from crewai import Crew, Process
 from agents import coder, reviewer, tester, fixer, integrator, fast_llm
-from tasks import build_coder_task, build_remaining_tasks, build_repair_tasks
+from tasks import build_coder_task, build_edit_task, build_remaining_tasks, build_repair_tasks
 
 MAX_REPAIR_CYCLES = 2
 
@@ -260,11 +260,10 @@ def has_test_files(output_dir: str) -> bool:
 
 def run_pytest(output_dir: str):
     """
-    Run pytest against the entire output/tests/ directory with PYTHONPATH
-    pointing at output/src/.
+    Run pytest from output/ using pytest.ini (pythonpath = src, testpaths = tests).
+    PYTHONPATH is also set as a belt-and-suspenders fallback.
     Returns (all_passed, output_text).
     """
-    tests_dir = os.path.join(output_dir, TESTS_DIR)
     if not has_test_files(output_dir):
         return False, "No test file found in output/tests/ (expected test_*.py or *_test.py)"
 
@@ -273,10 +272,10 @@ def run_pytest(output_dir: str):
     env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
 
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", tests_dir, "--tb=short", "-v", "--no-header"],
+        [sys.executable, "-m", "pytest", "--tb=short", "-v", "--no-header"],
         capture_output=True,
         text=True,
-        cwd=tests_dir,
+        cwd=output_dir,   # run from output/ so pytest.ini is picked up
         env=env,
     )
     output = result.stdout
@@ -313,12 +312,11 @@ _SILENT_STEPS = {0, 3}
 # -- Progress tracker -----------------------------------------------------------
 
 STEP_LABELS = [
-    ("Step 1/6", "Coder",      "writing code..."),
-    ("Step 2/6", "Sampler",    "running code to collect ground-truth outputs..."),
-    ("Step 3/6", "Reviewer",   "reviewing code..."),
-    ("Step 4/6", "Tester",     "writing tests..."),
-    ("Step 5/6", "Fixer",      "fixing code..."),
-    ("Step 6/6", "Integrator", "checking imports and wiring..."),
+    ("Step 1/5", "Coder",    "writing code..."),
+    ("Step 2/5", "Sampler",  "running code to collect ground-truth outputs..."),
+    ("Step 3/5", "Reviewer", "reviewing code..."),
+    ("Step 4/5", "Tester",   "writing tests..."),
+    ("Step 5/5", "Fixer",    "fixing code and verifying imports..."),
 ]
 _current_step  = [-1]
 _step_start    = [0.0]
@@ -357,122 +355,30 @@ def on_task_complete(task_output):
     print_step_start(_current_step[0])
 
 
-# -- Main -----------------------------------------------------------------------
+# -- Pipeline helpers ----------------------------------------------------------
 
-def main():
-    feature_request = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else DEFAULT_TASK
-
-    print("\n" + "="*60)
-    print("TASK:")
-    print(feature_request.strip())
-    print("="*60)
-
-    # Wipe stale files from any previous run
-    output_dir = os.path.join(os.getcwd(), "output")
-    os.makedirs(output_dir, exist_ok=True)
-    clear_output(output_dir)
-
-    print("\nStarting crew...\n")
-    _total_start[0] = time.time()
-
-    # ── Phase 1: Coder ────────────────────────────────────────────────────────
-    code_task = build_coder_task(feature_request)
-
-    phase1_crew = Crew(
-        agents=[coder],
-        tasks=[code_task],
-        process=Process.sequential,
-        verbose=False,
-        task_callback=on_task_complete,
-    )
-
-    _current_step[0] = 0
-    print_step_start(0)
-    phase1_crew.kickoff()
-    _mutable_stdout.muted = False
-
-    # ── Sampler: execute coder output, collect real input→output pairs ─────────
-    # (Step 1 header was already printed by on_task_complete advancing from step 0)
-    sampler_start = time.time()
-    coder_raw     = str(code_task.output.raw if code_task.output else "")
-    coder_files   = parse_all_blocks(coder_raw)
-    real_outputs  = run_sampler(coder_files, feature_request, output_dir)
-    _print(f"   ✓ Sampler done  [{_fmt_elapsed(time.time() - sampler_start)}]"
-           + ("" if real_outputs else "  (no outputs — tester will use property tests only)"))
-
-    # Advance manually to reviewer (step 2)
-    _current_step[0] = 2
-    print_step_start(2)
-
-    # ── Phase 2: Reviewer → Tester → Fixer → Integrator ──────────────────────
-    remaining_tasks = build_remaining_tasks(feature_request, code_task, real_outputs)
-
-    phase2_crew = Crew(
-        agents=[reviewer, tester, fixer, integrator],
-        tasks=remaining_tasks,
-        process=Process.sequential,
-        verbose=False,
-        task_callback=on_task_complete,
-    )
-
-    phase2_crew.kickoff()
-    _mutable_stdout.muted = False
-
-    # ── Save outputs ──────────────────────────────────────────────────────────
-    # remaining_tasks = [review(0), test(1), fix(2), integrate(3)]
-    r_outputs      = [t.output.raw if t.output else "" for t in remaining_tasks]
-    integrator_out = str(r_outputs[3])
-
-    print()
-
-    files = parse_all_blocks(integrator_out)
-    if not files:
-        files = parse_all_blocks(str(r_outputs[2]))
-    if not files:
-        fallback = extract_code(str(r_outputs[2]))
-        if fallback:
-            files["implementation.py"] = fallback
-            print("Warning: no labelled blocks found - saved fixer output as src/implementation.py")
-
-    save_all_files(files, output_dir)
-
-    # Write a conftest.py so tests can import from ../src without setting PYTHONPATH manually
-    tests_dir = os.path.join(output_dir, TESTS_DIR)
-    os.makedirs(tests_dir, exist_ok=True)
-    conftest_path = os.path.join(tests_dir, "conftest.py")
-    with open(conftest_path, "w", encoding="utf-8") as f:
-        f.write(
-            "import sys, os\n"
-            "sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))\n"
-        )
-
-    review_path = os.path.join(output_dir, "review.txt")
-    with open(review_path, "w", encoding="utf-8") as f:
-        f.write(str(r_outputs[0]))
-    print("  Saved: output/review.txt")
-
-    # ── Executor loop ─────────────────────────────────────────────────────────
-    print("\n" + "="*60)
-    print("Step 7  Executor: running pytest...")
-    print("="*60)
-
+def _repair_loop(output_dir: str, feature_request: str) -> bool:
+    """
+    Run pytest; if failing, attempt up to MAX_REPAIR_CYCLES repair cycles.
+    Returns True if all tests pass at the end.
+    """
     passed, pytest_out = run_pytest(output_dir)
     print(pytest_out)
 
     if passed:
         total = _fmt_elapsed(time.time() - _total_start[0])
-        print(f"All tests passed on first run - no repairs needed.  [total: {total}]")
-        return
+        _print(f"All tests passed — no repairs needed.  [total: {total}]")
+        return True
 
     for cycle in range(1, MAX_REPAIR_CYCLES + 1):
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("Repair cycle " + str(cycle) + "/" + str(MAX_REPAIR_CYCLES))
-        print("="*60)
+        print("=" * 60)
 
         current_files = read_output_files(output_dir)
         repair_tasks  = build_repair_tasks(current_files, pytest_out, cycle, feature_request)
 
-        print("\nRepair " + str(cycle) + " - Fixer is patching code...")
+        print("\nRepair " + str(cycle) + " — Fixer is patching code...")
         repair_crew = Crew(
             agents=[fixer, integrator],
             tasks=repair_tasks,
@@ -484,14 +390,14 @@ def main():
         repair_outputs    = [t.output.raw if t.output else "" for t in repair_tasks]
         repair_integrator = str(repair_outputs[-1])
 
-        print("Repair " + str(cycle) + " - Integrator verifying wiring...")
+        print("Repair " + str(cycle) + " — Integrator verifying wiring...")
         repaired = parse_all_blocks(repair_integrator)
         if not repaired:
             repaired = parse_all_blocks(repair_outputs[0])
         if repaired:
             save_all_files(repaired, output_dir)
         else:
-            print("Warning: repair produced no labelled blocks - files unchanged.")
+            print("Warning: repair produced no labelled blocks — files unchanged.")
 
         print("\nExecutor: re-running pytest after repair " + str(cycle) + "...")
         passed, pytest_out = run_pytest(output_dir)
@@ -499,12 +405,195 @@ def main():
 
         if passed:
             total = _fmt_elapsed(time.time() - _total_start[0])
-            print(f"All tests passed after repair cycle {cycle}!  [total: {total}]")
-            return
+            _print(f"All tests passed after repair cycle {cycle}!  [total: {total}]")
+            return True
 
     total = _fmt_elapsed(time.time() - _total_start[0])
-    print(f"Tests still failing after {MAX_REPAIR_CYCLES} repair cycles.  [total: {total}]")
-    print("Final pytest output above. Check output/ for the latest code.")
+    _print(f"Tests still failing after {MAX_REPAIR_CYCLES} repair cycles.  [total: {total}]")
+    _print("Final pytest output above. Check output/ for the latest code.")
+    return False
+
+
+def _save_phase2_output(remaining_tasks: list, output_dir: str) -> None:
+    """Save tester + fixer output files and review.txt.
+
+    Save order:
+      1. Tester output  — always saved (test file is new every run)
+      2. Fixer output   — only changed files, overwrites coder draft or tester file if modified
+    """
+    # remaining_tasks = [review(0), test(1), fix(2)]
+    r_outputs = [t.output.raw if t.output else "" for t in remaining_tasks]
+
+    print()
+
+    # 1. Always save the tester's test file(s)
+    test_files = parse_all_blocks(str(r_outputs[1]))
+    if test_files:
+        save_all_files(test_files, output_dir)
+    else:
+        print("  Warning: tester produced no labelled test file block.")
+
+    # 2. Save only fixer-modified files (overwrites coder draft or tester output if changed)
+    fix_files = parse_all_blocks(str(r_outputs[2]))
+    if fix_files:
+        save_all_files(fix_files, output_dir)
+    else:
+        print("  Note: fixer made no changes — coder draft already on disk.")
+
+    review_path = os.path.join(output_dir, "review.txt")
+    with open(review_path, "w", encoding="utf-8") as f:
+        f.write(str(r_outputs[0]))
+    print("  Saved: output/review.txt")
+
+
+def _run_phase1_and_sampler(code_task, feature_request: str, output_dir: str) -> tuple:
+    """Run the coder crew and sampler; return (real_outputs, coder_files)."""
+    phase1_crew = Crew(
+        agents=[coder],
+        tasks=[code_task],
+        process=Process.sequential,
+        verbose=False,
+        task_callback=on_task_complete,
+    )
+    _current_step[0] = 0
+    print_step_start(0)
+    phase1_crew.kickoff()
+    _mutable_stdout.muted = False
+
+    sampler_start = time.time()
+    coder_raw    = str(code_task.output.raw if code_task.output else "")
+    coder_files  = parse_all_blocks(coder_raw)
+    real_outputs = run_sampler(coder_files, feature_request, output_dir)
+    _print(f"   ✓ Sampler done  [{_fmt_elapsed(time.time() - sampler_start)}]"
+           + ("" if real_outputs else "  (no outputs — tester will use property tests only)"))
+    return real_outputs, coder_files
+
+
+def _run_phase2(code_task, feature_request: str, real_outputs: str, output_dir: str) -> list:
+    """Run reviewer → tester → fixer; return remaining_tasks list."""
+    _current_step[0] = 2
+    print_step_start(2)
+
+    remaining_tasks = build_remaining_tasks(feature_request, code_task, real_outputs)
+    phase2_crew = Crew(
+        agents=[reviewer, tester, fixer],
+        tasks=remaining_tasks,
+        process=Process.sequential,
+        verbose=False,
+        task_callback=on_task_complete,
+    )
+    phase2_crew.kickoff()
+    _mutable_stdout.muted = False
+    return remaining_tasks
+
+
+# -- Run modes -----------------------------------------------------------------
+
+def run_full_pipeline(feature_request: str, output_dir: str) -> None:
+    """Default mode: full pipeline from scratch."""
+    print("\n" + "=" * 60)
+    print("TASK:")
+    print(feature_request.strip())
+    print("=" * 60)
+
+    clear_output(output_dir)
+    print("\nStarting crew...\n")
+    _total_start[0] = time.time()
+
+    code_task              = build_coder_task(feature_request)
+    real_outputs, coder_files = _run_phase1_and_sampler(code_task, feature_request, output_dir)
+    save_all_files(coder_files, output_dir)      # save coder draft immediately
+    remaining              = _run_phase2(code_task, feature_request, real_outputs, output_dir)
+    _save_phase2_output(remaining, output_dir)   # overwrite only fixer-changed files
+
+    print("\n" + "=" * 60)
+    print("Step 6  Executor: running pytest...")
+    print("=" * 60)
+    _repair_loop(output_dir, feature_request)
+
+
+def run_edit_mode(instruction: str, output_dir: str) -> None:
+    """Edit mode: apply a targeted change to existing output/ files."""
+    print("\n" + "=" * 60)
+    print("EDIT:")
+    print(instruction.strip())
+    print("=" * 60)
+
+    existing_files = read_output_files(output_dir)
+    if not existing_files:
+        _print("\nNo files found in output/src/ or output/tests/. Run without --edit first.")
+        return
+
+    _print(f"\nLoaded {len(existing_files)} existing file(s): {', '.join(existing_files)}")
+    print("\nStarting edit crew...\n")
+    _total_start[0] = time.time()
+
+    code_task                 = build_edit_task(instruction, existing_files)
+    real_outputs, coder_files = _run_phase1_and_sampler(code_task, instruction, output_dir)
+    save_all_files(coder_files, output_dir)      # save edit draft immediately
+    remaining                 = _run_phase2(code_task, instruction, real_outputs, output_dir)
+    _save_phase2_output(remaining, output_dir)   # overwrite only fixer-changed files
+
+    print("\n" + "=" * 60)
+    print("Step 6  Executor: running pytest...")
+    print("=" * 60)
+    _repair_loop(output_dir, instruction)
+
+
+def run_fix_mode(instruction: str, output_dir: str) -> None:
+    """Fix mode: run pytest on existing files and repair if failing."""
+    print("\n" + "=" * 60)
+    print("FIX MODE" + (f": {instruction.strip()}" if instruction else ""))
+    print("=" * 60)
+
+    if not read_output_files(output_dir):
+        _print("\nNo files found in output/src/ or output/tests/. Run without --fix first.")
+        return
+
+    _total_start[0] = time.time()
+    print("\n" + "=" * 60)
+    print("Executor: running pytest on existing files...")
+    print("=" * 60)
+    _repair_loop(output_dir, instruction)
+
+
+# -- Main ----------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="CrewAI multi-agent coding pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            '  python main.py "Build a URL shortener with Flask"\n'
+            '  python main.py --edit "add a search command that filters by keyword"\n'
+            '  python main.py --fix "fix the remaining errors in tests"\n'
+            '  python main.py --fix'
+        ),
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--edit", metavar="INSTRUCTION",
+                       help="Apply an edit to existing output/ files")
+    group.add_argument("--fix", metavar="INSTRUCTION", nargs="?", const="",
+                       help="Repair failing tests in existing output/ files")
+    parser.add_argument("task", nargs="?", default=None,
+                        help="Task description for the full pipeline")
+    args = parser.parse_args()
+
+    output_dir = os.path.join(os.getcwd(), "output")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # pytest.ini tells pytest to add src/ to sys.path and look for tests in tests/
+    # This replaces conftest.py and works for both pipeline runs and manual pytest calls
+    with open(os.path.join(output_dir, "pytest.ini"), "w", encoding="utf-8") as f:
+        f.write("[pytest]\npythonpath = src\ntestpaths = tests\n")
+
+    if args.fix is not None:
+        run_fix_mode(args.fix, output_dir)
+    elif args.edit:
+        run_edit_mode(args.edit, output_dir)
+    else:
+        run_full_pipeline(args.task or DEFAULT_TASK, output_dir)
 
 
 if __name__ == "__main__":

@@ -9,19 +9,19 @@ BASE_MODEL = "ollama/qwen3-coder:30b"  # single model for all agents — no swap
 fast_llm = LLM(
     model=BASE_MODEL,                  # preferred: ollama/qwen3.5:9b
     base_url="http://localhost:11434",
-    timeout=600,                       # 10 min cap — avoids silent hangs
+    timeout=1200,                      # 20 min cap — avoids silent hangs
 )
 
 coder_llm = LLM(
     model=BASE_MODEL,                  # preferred: ollama/qwen3-coder:30b
     base_url="http://localhost:11434",
-    timeout=600,
+    timeout=1200,
 )
 
 tester_llm = LLM(
     model=BASE_MODEL,                  # preferred: ollama/qwen2.5-coder:7b
     base_url="http://localhost:11434",
-    timeout=600,
+    timeout=1200,
 )
 
 # ── Agents ────────────────────────────────────────────────────────────────────
@@ -42,6 +42,7 @@ coder = Agent(
     ),
     llm=coder_llm,
     verbose=False,
+    respect_context_window=True,
 )
 
 reviewer = Agent(
@@ -57,12 +58,13 @@ reviewer = Agent(
     ),
     llm=fast_llm,
     verbose=False,
+    respect_context_window=True,
 )
 
 tester = Agent(
     role="QA Engineer",
     goal=(
-        "Write comprehensive pytest tests that cover happy paths, edge cases, and error conditions. "
+        "Write comprehensive pytest tests that cover happy paths, edge cases, and error conditions, maximum 10 tests. "
         "Output ONLY the labelled test file block — no explanations, no commentary, no prose."
     ),
     backstory=(
@@ -77,6 +79,7 @@ tester = Agent(
     ),
     llm=tester_llm,
     verbose=False,
+    respect_context_window=True,
 )
 
 fixer = Agent(
@@ -98,6 +101,7 @@ fixer = Agent(
     ),
     llm=coder_llm,
     verbose=False,
+    respect_context_window=True,
 )
 
 integrator = Agent(
@@ -119,4 +123,5 @@ integrator = Agent(
     ),
     llm=coder_llm,
     verbose=False,
+    respect_context_window=True,
 )
